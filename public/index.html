@@ -1,0 +1,235 @@
+
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MC Bot Web</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <link rel="icon" href="https://static.wikia.nocookie.net/minecraft_gamepedia/images/9/99/Grass_Block_JE6_BE3.png" />
+  <style>
+    .card { @apply bg-white/80 rounded-2xl shadow p-4; }
+    .grid-inv { display:grid; grid-template-columns: repeat(9, 1fr); gap:6px; }
+    .slot { @apply border rounded-lg p-2 text-xs text-center bg-gray-50 hover:bg-gray-100; min-width:40px; }
+    .btn { @apply px-3 py-1 rounded-xl shadow border bg-white hover:bg-gray-50 active:scale-95; }
+    .btn-primary { @apply bg-green-600 text-white hover:bg-green-700; }
+    .badge { @apply px-2 py-0.5 rounded-full text-xs; }
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100">
+  <div id="app" class="max-w-7xl mx-auto p-4 space-y-4">
+    <!-- Server Banner -->
+    <div class="card flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div :class="['badge', banner.online ? 'bg-green-600 text-white':'bg-red-600 text-white']">
+          {{ banner.online ? 'Online' : 'Offline' }}
+        </div>
+        <div class="font-semibold">IP:</div><div>{{ banner.ip }}:{{ banner.port }}</div>
+        <div class="font-semibold ml-4">Version:</div><div>{{ banner.version }}</div>
+        <div class="font-semibold ml-4">Ping:</div><div>{{ banner.latency ?? '—' }} ms</div>
+      </div>
+      <div class="flex items-center gap-2">
+        <div class="font-semibold">Players (non-bot):</div>
+        <div class="flex -space-x-2">
+          <template v-for="p in banner.players" :key="p">
+            <img :src="`https://crafatar.com/avatars/${encodeURIComponent(p)}?overlay`" class="w-6 h-6 rounded" :title="p">
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add Bot + List -->
+    <div class="card">
+      <div class="flex items-center justify-between mb-3">
+        <div class="text-lg font-bold">Bots</div>
+        <div class="flex gap-2">
+          <input v-model="newBotName" placeholder="Bot username" class="border rounded-xl px-3 py-1" maxlength="16">
+          <button class="btn btn-primary" @click="addBot">Add Bot</button>
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-gray-600">
+              <th class="py-2">Head</th><th>Name</th><th>Status</th><th>Description</th><th>Connect</th><th>Delete</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="b in bots" :key="b.id" class="hover:bg-gray-50 cursor-pointer" @click="selectBot(b.id)">
+              <td class="py-2"><img :src="`https://crafatar.com/avatars/${encodeURIComponent(b.username)}?overlay`" class="w-8 h-8 rounded"></td>
+              <td>{{ b.username }}</td>
+              <td><span :class="['badge', b.status==='online'?'bg-green-600 text-white':'bg-gray-400 text-white']">{{ b.status }}</span></td>
+              <td class="truncate max-w-xs">{{ b.description || '—' }}</td>
+              <td><input type="checkbox" :checked="b.status==='online'" @click.stop @change="toggleConnect(b, $event)"></td>
+              <td><button class="btn" @click.stop="removeBot(b.id)">Delete</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Bot Panel -->
+    <div v-if="current.bot" class="grid md:grid-cols-2 gap-4">
+      <!-- Status -->
+      <div class="card space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="text-lg font-bold">Status — {{ current.bot.username }}</div>
+          <div class="text-xs text-gray-500">Uptime: {{ prettyMs(current.snapshot?.uptimeMs) }}</div>
+        </div>
+        <div class="flex gap-2 items-center">
+          <input v-model="currentDesc" class="border rounded-xl px-3 py-1 w-full" placeholder="Description (127 chars)" maxlength="127">
+          <button class="btn" @click="saveDesc">Save</button>
+        </div>
+        <div class="grid grid-cols-2 gap-2 text-sm">
+          <div>Pos: <b>{{ pos(current.snapshot?.position) }}</b> <span class="text-gray-500">({{ current.snapshot?.dimension }})</span></div>
+          <div>Health/Hunger: <b>{{ current.snapshot?.health }} / {{ current.snapshot?.hunger }}</b></div>
+          <div>XP: <b>{{ current.snapshot?.xpLevel }}</b></div>
+          <div>Looking: <b>{{ lookingTxt(current.snapshot?.looking) }}</b></div>
+        </div>
+        <div class="flex gap-2">
+          <input v-model="chatMsg" placeholder="Chat..." class="border rounded-xl px-3 py-1 w-full" @keyup.enter="sendChat">
+          <button class="btn" @click="sendChat">Send</button>
+          <button class="btn" @click="respawn">Respawn</button>
+        </div>
+        <div class="text-sm"><b>Active actions:</b> <span v-if="!current.snapshot?.actions?.length">—</span>
+          <span v-for="a in current.snapshot?.actions" :key="a.name" class="badge bg-blue-600 text-white mr-1">{{ a.name }} ({{ a.mode }})</span>
+        </div>
+      </div>
+
+      <!-- Inventory -->
+      <div class="card space-y-2">
+        <div class="flex items-center justify-between">
+          <div class="text-lg font-bold">Inventory</div>
+          <div class="flex gap-2 items-center">
+            <div>Main:</div>
+            <div class="text-xs">{{ itemLabel(current.snapshot?.hand?.main) }}</div>
+            <div>Off:</div>
+            <div class="text-xs">{{ itemLabel(current.snapshot?.hand?.off) }}</div>
+            <button class="btn" @click="emit('swap_hands')">Swap</button>
+          </div>
+        </div>
+        <div class="grid-inv">
+          <div v-for="(it, idx) in current.snapshot?.inventory" :key="idx" class="slot" @click="emit('hold_slot',{ slotIndex: slotIndexFromIndex(idx) })">
+            <div class="font-medium truncate">{{ it?.displayName || '—' }}</div>
+            <div v-if="it?.count">x{{ it.count }}</div>
+          </div>
+        </div>
+        <div class="grid grid-cols-5 gap-2 items-center">
+          <div class="font-medium">Armor:</div>
+          <div class="slot" @click="emit('unequip_armor',{ which: 'head' })">{{ itemLabel(current.snapshot?.armor?.head) }}</div>
+          <div class="slot" @click="emit('unequip_armor',{ which: 'chest' })">{{ itemLabel(current.snapshot?.armor?.chest) }}</div>
+          <div class="slot" @click="emit('unequip_armor',{ which: 'legs' })">{{ itemLabel(current.snapshot?.armor?.legs) }}</div>
+          <div class="slot" @click="emit('unequip_armor',{ which: 'feet' })">{{ itemLabel(current.snapshot?.armor?.feet) }}</div>
+        </div>
+      </div>
+
+      <!-- Movement / Looking -->
+      <div class="card space-y-3">
+        <div class="text-lg font-bold">Movement & Looking</div>
+        <div class="grid grid-cols-3 gap-2 items-center">
+          <div></div>
+          <button class="btn" @mousedown="moveCont('forward', true)" @mouseup="moveCont('forward', false)">W</button>
+          <div></div>
+          <button class="btn" @mousedown="moveCont('left', true)" @mouseup="moveCont('left', false)">A</button>
+          <button class="btn" @click="moveStep('forward')">Step {{ moveBlocks }}</button>
+          <button class="btn" @mousedown="moveCont('right', true)" @mouseup="moveCont('right', false)">D</button>
+          <div></div>
+          <button class="btn" @mousedown="moveCont('back', true)" @mouseup="moveCont('back', false)">S</button>
+          <div></div>
+        </div>
+        <div class="flex gap-2 items-center">
+          <label>Blocks:</label>
+          <input type="number" v-model.number="moveBlocks" class="border rounded-xl px-2 py-1 w-24">
+          <button class="btn" @click="emit('jump_once')">Jump</button>
+          <button class="btn" @click="stopAll">Stop</button>
+        </div>
+        <div class="flex gap-2 items-center">
+          <input v-model.number="gotoX" placeholder="X" class="border rounded-xl px-2 py-1 w-24">
+          <input v-model.number="gotoY" placeholder="Y" class="border rounded-xl px-2 py-1 w-24">
+          <input v-model.number="gotoZ" placeholder="Z" class="border rounded-xl px-2 py-1 w-24">
+          <button class="btn" @click="emit('goto_xyz',{ x:gotoX,y:gotoY,z:gotoZ })">Pathfind</button>
+        </div>
+        <div class="grid grid-cols-3 gap-2 items-center">
+          <div></div>
+          <button class="btn" @click="rot(0,-rotDeg)">↑</button>
+          <div></div>
+          <button class="btn" @click="rot(-rotDeg,0)">←</button>
+          <div class="text-center">
+            <div class="text-xs text-gray-500">Yaw: {{ deg(current.snapshot?.yaw) }}°</div>
+            <div class="text-xs text-gray-500">Pitch: {{ deg(current.snapshot?.pitch) }}°</div>
+            <div class="flex gap-2 items-center justify-center mt-1">
+              <span>Δ°</span><input type="number" v-model.number="rotDeg" class="border rounded-xl px-2 py-1 w-20">
+            </div>
+          </div>
+          <button class="btn" @click="rot(rotDeg,0)">→</button>
+          <div></div>
+          <button class="btn" @click="rot(0,rotDeg)">↓</button>
+          <div></div>
+        </div>
+        <div class="flex gap-2 items-center">
+          <input v-model.number="yawSet" placeholder="Yaw°" class="border rounded-xl px-2 py-1 w-24">
+          <input v-model.number="pitchSet" placeholder="Pitch°" class="border rounded-xl px-2 py-1 w-24">
+          <button class="btn" @click="emit('look_angles',{ yawDeg:yawSet, pitchDeg:pitchSet })">Set Angles</button>
+        </div>
+        <div class="flex gap-2 items-center">
+          <input v-model.number="lookX" placeholder="Look X" class="border rounded-xl px-2 py-1 w-24">
+          <input v-model.number="lookY" placeholder="Look Y" class="border rounded-xl px-2 py-1 w-24">
+          <input v-model.number="lookZ" placeholder="Look Z" class="border rounded-xl px-2 py-1 w-24">
+          <button class="btn" @click="emit('look_at',{ x:lookX,y:lookY,z:lookZ })">Look At</button>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="card space-y-3">
+        <div class="text-lg font-bold">Actions</div>
+        <div class="grid md:grid-cols-2 gap-3">
+          <div v-for="name in ['leftClick','rightClick','jump','sneak','drop']" :key="name" class="border rounded-xl p-3 bg-gray-50">
+            <div class="font-semibold mb-1">{{ name }}</div>
+            <div class="flex flex-wrap gap-2 items-center">
+              <select v-model="actionMode[name]" class="border rounded-xl px-2 py-1">
+                <option>once</option>
+                <option>interval</option>
+                <option>continuous</option>
+                <option>stop</option>
+              </select>
+              <div v-if="actionMode[name]==='interval'" class="flex items-center gap-2">
+                <span>ticks</span><input type="number" v-model.number="actionInterval[name]" class="border rounded-xl px-2 py-1 w-24">
+              </div>
+              <div v-if="name==='drop'" class="flex items-center gap-2">
+                <label><input type="checkbox" v-model="dropStack"> Drop Stack</label>
+              </div>
+              <button class="btn" @click="applyAction(name)">Apply</button>
+            </div>
+          </div>
+        </div>
+        <div class="text-sm"><b>Active actions:</b>
+          <span v-if="!current.snapshot?.actions?.length">—</span>
+          <span v-for="a in current.snapshot?.actions" :key="a.name" class="badge bg-blue-600 text-white mr-1">{{ a.name }} ({{ a.mode }})</span>
+        </div>
+      </div>
+
+      <!-- Misc -->
+      <div class="card space-y-2">
+        <div class="text-lg font-bold">Misc Tweaks</div>
+        <label class="flex items-center gap-2"><input type="checkbox" v-model="auto.reconnect" @change="emit('toggle_auto',{ key:'reconnect', value:auto.reconnect })"> Auto-Reconnect</label>
+        <label class="flex items-center gap-2"><input type="checkbox" v-model="auto.respawn" @change="emit('toggle_auto',{ key:'respawn', value:auto.respawn })"> Auto-Respawn</label>
+        <label class="flex items-center gap-2"><input type="checkbox" v-model="auto.sprint" @change="emit('toggle_auto',{ key:'sprint', value:auto.sprint })"> Auto-Sprint</label>
+        <label class="flex items-center gap-2"><input type="checkbox" v-model="auto.jump" @change="emit('toggle_auto',{ key:'jump', value:auto.jump })"> Auto-Jump</label>
+        <label class="flex items-center gap-2"><input type="checkbox" v-model="auto.sleep" @change="emit('toggle_auto',{ key:'sleep', value:auto.sleep })"> Auto-Sleep (beds within 10 blocks at night)</label>
+      </div>
+
+      <!-- Debug -->
+      <div class="card space-y-2">
+        <div class="text-lg font-bold">Debug</div>
+        <div class="h-64 overflow-auto bg-black text-green-300 font-mono text-xs p-2 rounded">
+          <div v-for="line in current.snapshot?.debugTail" :key="line">{{ line }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
