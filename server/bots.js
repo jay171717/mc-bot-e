@@ -1,6 +1,8 @@
 
 import mineflayer from 'mineflayer'
-import { pathfinder, goals } from 'mineflayer-pathfinder'
+import pkg from 'mineflayer-pathfinder';
+const { pathfinder, goals } = pkg;
+
 import mcDataLoader from 'minecraft-data'
 import { v4 as uuidv4 } from 'uuid'
 import config from './config.js'
